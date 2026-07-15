@@ -38,7 +38,7 @@ cp .env.example .env
 
 可选设置 `TELEGRAM_CHANNEL_ID`：设置后，只有该频道的成员能在群里使用 Bot；不设置时，目标群里的成员可以直接使用。
 
-`OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。
+`OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。联网回答默认要求至少 6 个可用来源和约 1800 个中文字符，可用 `SEARCH_MIN_SOURCES` 与 `ANSWER_TARGET_CHARS` 调整。
 图片默认每张最多 10 MB、每次合计最多 20 MB，可用 `MAX_IMAGE_BYTES` 和 `MAX_TOTAL_IMAGE_BYTES` 调整。
 Typst 默认以 160 PPI 渲染，最多 10 页；可用 `TYPST_PPI`、`TYPST_MAX_CHARS` 和 `TYPST_MAX_PAGES` 调整。官方 Docker 镜像已经包含 Typst 和 Noto CJK 字体，本地直接运行则需自行安装 `typst` 命令和中文字体。
 

@@ -3,7 +3,7 @@ import { InputFile, type Api } from "grammy";
 import type { ChatMember, Update } from "grammy/types";
 import type { Config } from "./config.ts";
 import type { Store } from "./database.ts";
-import { extractSources, stripSourceUrls } from "./format.ts";
+import { extractSourceLinks, stripSourceUrls } from "./format.ts";
 import type { Logger } from "./logger.ts";
 import { loadPrepared, prepareImage } from "./media.ts";
 import type { OmpRuntime } from "./omp.ts";
@@ -98,7 +98,8 @@ export class WorkerPool {
 
     const prompt = this.buildPrompt(req.parentNodeId, req.quotedText, req.question, req.userId);
     const answer = await this.omp.ask(prompt, prepared);
-    const sources = extractSources(answer);
+    const sourceLinks = extractSourceLinks(answer);
+    const sources = sourceLinks.map(source=>source.url);
     const body = stripSourceUrls(answer);
     const rendered = await this.renderer.render(body);
     const outputIds: number[] = [];
@@ -107,16 +108,18 @@ export class WorkerPool {
         const sent = await this.api.sendPhoto(req.chatId, new InputFile(path), { reply_parameters: { message_id:req.inputMessageId } });
         outputIds.push(sent.message_id);
       }
-      if (sources.length) {
+      if (sourceLinks.length) {
         const batches: string[] = [];
-        for (const source of sources) {
+        for (const [index,source] of sourceLinks.entries()) {
+          const href = escapeHtml(source.url).replaceAll('"',"&quot;");
+          const line = `<a href="${href}">${index+1}. ${escapeHtml(source.label)}</a>`;
           const last = batches.at(-1);
-          if (!last || last.length + source.length + 1 > 3900) batches.push(source);
-          else batches[batches.length-1] = `${last}\n${source}`;
+          if (!last || last.length + line.length + 1 > 3900) batches.push(line);
+          else batches[batches.length-1] = `${last}\n${line}`;
         }
         for (const batch of batches) {
           const sent = await this.api.sendMessage(req.chatId, batch, {
-            link_preview_options:{is_disabled:true}, reply_parameters:{message_id:req.inputMessageId},
+            parse_mode:"HTML", link_preview_options:{is_disabled:true}, reply_parameters:{message_id:req.inputMessageId},
           });
           outputIds.push(sent.message_id);
         }
@@ -155,4 +158,8 @@ export class WorkerPool {
   async cleanup() {
     for (const path of this.store.cleanup()) await unlink(path).catch(()=>{});
   }
+}
+
+function escapeHtml(value: string) {
+  return value.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
 }
