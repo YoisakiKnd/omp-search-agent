@@ -106,12 +106,13 @@ export class Store {
     return this.db.query(`SELECT n.* FROM bot_messages b JOIN conversation_nodes n ON n.id=b.node_id
       WHERE b.chat_id=? AND b.message_id=? AND n.expires_at>?`).get(chatId, messageId, Date.now()) as ConversationNode | null;
   }
-  conversationPath(parentId: number): ConversationNode[] {
+  conversationPath(parentId: number, ownerUserId?: number): ConversationNode[] {
     const rows: ConversationNode[] = [];
     let id: number | null = parentId;
     while (id && rows.length < this.config.CONTEXT_MAX_TURNS) {
       const row = this.db.query("SELECT * FROM conversation_nodes WHERE id=? AND expires_at>?").get(id, Date.now()) as ConversationNode | null;
       if (!row) break;
+      if (ownerUserId !== undefined && row.user_id !== ownerUserId) break;
       rows.push(row); id = row.parent_node_id;
     }
     return rows.reverse();
@@ -132,8 +133,8 @@ export class Store {
     });
     return tx.immediate();
   }
-  recentMedia(parentId: number, limit: number): Array<{hash:string;path:string;mime_type:string;bytes:number}> {
-    const path = this.conversationPath(parentId).reverse();
+  recentMedia(parentId: number, limit: number, ownerUserId?: number): Array<{hash:string;path:string;mime_type:string;bytes:number}> {
+    const path = this.conversationPath(parentId, ownerUserId).reverse();
     const out: Array<{hash:string;path:string;mime_type:string;bytes:number}> = [];
     for (const node of path) {
       const found = this.db.query(`SELECT a.* FROM node_media nm JOIN media_assets a ON a.hash=nm.media_hash WHERE nm.node_id=? AND a.expires_at>? ORDER BY nm.priority`).all(node.id, Date.now()) as typeof out;

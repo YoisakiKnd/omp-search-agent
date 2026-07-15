@@ -1,15 +1,16 @@
 import { unlink } from "node:fs/promises";
-import type { Api } from "grammy";
+import { InputFile, type Api } from "grammy";
 import type { ChatMember, Update } from "grammy/types";
 import type { Config } from "./config.ts";
 import type { Store } from "./database.ts";
-import { extractSources, splitText, toTelegramHtml } from "./format.ts";
+import { extractSources, stripSourceUrls } from "./format.ts";
 import type { Logger } from "./logger.ts";
 import { loadPrepared, prepareImage } from "./media.ts";
 import type { OmpRuntime } from "./omp.ts";
 import { parseUpdate } from "./parser.ts";
 import { RateLimiter } from "./rate-limit.ts";
 import type { JobRow, PreparedImage } from "./types.ts";
+import { TypstRenderer } from "./typst.ts";
 
 class PermanentError extends Error {}
 
@@ -22,8 +23,11 @@ export class WorkerPool {
   private tasks = new Set<Promise<void>>();
   private limiter = new RateLimiter(5, 10 * 60_000);
   private membershipCache = new Map<number, { allowed: boolean; expires: number }>();
+  private renderer: TypstRenderer;
 
-  constructor(private config: Config, private store: Store, private api: Api, private botId: number, private username: string, private omp: OmpRuntime, private logger: Logger) {}
+  constructor(private config: Config, private store: Store, private api: Api, private botId: number, private username: string, private omp: OmpRuntime, private logger: Logger) {
+    this.renderer = new TypstRenderer(config);
+  }
 
   start() {
     for (let i = 0; i < this.config.GLOBAL_CONCURRENCY; i++) {
@@ -85,28 +89,49 @@ export class WorkerPool {
       if (!prepared.some(x => x.hash === image.hash)) prepared.push(image);
     }
     if (req.parentNodeId && prepared.length < this.config.MAX_IMAGES_PER_QUERY) {
-      const history = this.store.recentMedia(req.parentNodeId, this.config.MAX_IMAGES_PER_QUERY-prepared.length);
+      const history = this.store.recentMedia(req.parentNodeId, this.config.MAX_IMAGES_PER_QUERY-prepared.length, req.userId);
       for (const item of history) {
         if (prepared.some(x => x.hash === item.hash) || totalImageBytes+item.bytes > this.config.MAX_TOTAL_IMAGE_BYTES) continue;
         prepared.push(await loadPrepared(item.path,item.hash,item.mime_type,item.bytes)); totalImageBytes += item.bytes;
       }
     }
 
-    const prompt = this.buildPrompt(req.parentNodeId, req.quotedText, req.question);
+    const prompt = this.buildPrompt(req.parentNodeId, req.quotedText, req.question, req.userId);
     const answer = await this.omp.ask(prompt, prepared);
-    const chunks = splitText(answer);
+    const sources = extractSources(answer);
+    const body = stripSourceUrls(answer);
+    const rendered = await this.renderer.render(body);
     const outputIds: number[] = [];
-    await this.editSafe(req.chatId, placeholder, chunks[0]!); outputIds.push(placeholder);
-    for (const chunk of chunks.slice(1)) {
-      const sent = await this.sendSafe(req.chatId, chunk, req.inputMessageId); outputIds.push(sent.message_id);
+    try {
+      for (const path of rendered.paths) {
+        const sent = await this.api.sendPhoto(req.chatId, new InputFile(path), { reply_parameters: { message_id:req.inputMessageId } });
+        outputIds.push(sent.message_id);
+      }
+      if (sources.length) {
+        const batches: string[] = [];
+        for (const source of sources) {
+          const last = batches.at(-1);
+          if (!last || last.length + source.length + 1 > 3900) batches.push(source);
+          else batches[batches.length-1] = `${last}\n${source}`;
+        }
+        for (const batch of batches) {
+          const sent = await this.api.sendMessage(req.chatId, batch, {
+            link_preview_options:{is_disabled:true}, reply_parameters:{message_id:req.inputMessageId},
+          });
+          outputIds.push(sent.message_id);
+        }
+      }
+      await this.api.deleteMessage(req.chatId, placeholder).catch(()=>{});
+    } finally {
+      await rendered.cleanup();
     }
-    this.store.addConversation({ chatId:req.chatId,inputMessageId:req.inputMessageId,userId:req.userId,parentId:req.parentNodeId,question:req.question,quotedText:req.quotedText,answer,sources:extractSources(answer),outputIds,media:prepared.map(x=>({hash:x.hash,path:x.path,mimeType:x.mimeType,bytes:x.bytes})) });
+    this.store.addConversation({ chatId:req.chatId,inputMessageId:req.inputMessageId,userId:req.userId,parentId:req.parentNodeId,question:req.question,quotedText:req.quotedText,answer,sources,outputIds,media:prepared.map(x=>({hash:x.hash,path:x.path,mimeType:x.mimeType,bytes:x.bytes})) });
   }
 
-  private buildPrompt(parentId: number | undefined, quoted: string | undefined, question: string) {
+  private buildPrompt(parentId: number | undefined, quoted: string | undefined, question: string, ownerUserId: number) {
     const sections: string[] = [];
     if (parentId) {
-      const path = this.store.conversationPath(parentId);
+      const path = this.store.conversationPath(parentId, ownerUserId);
       let transcript = path.map((n,i) => `第 ${i+1} 轮用户：${n.question}\n第 ${i+1} 轮助手：${n.answer}`).join("\n\n");
       if (transcript.length > this.config.CONTEXT_MAX_CHARS) transcript = transcript.slice(-this.config.CONTEXT_MAX_CHARS);
       sections.push(`<untrusted_conversation>\n${transcript}\n</untrusted_conversation>`);
@@ -116,14 +141,6 @@ export class WorkerPool {
     return sections.join("\n\n");
   }
 
-  private async editSafe(chatId: number, messageId: number, text: string) {
-    try { await this.api.editMessageText(chatId,messageId,toTelegramHtml(text),{parse_mode:"HTML",link_preview_options:{is_disabled:true}}); }
-    catch { await this.api.editMessageText(chatId,messageId,text,{link_preview_options:{is_disabled:true}}); }
-  }
-  private async sendSafe(chatId: number, text: string, replyTo: number) {
-    try { return await this.api.sendMessage(chatId,toTelegramHtml(text),{parse_mode:"HTML",link_preview_options:{is_disabled:true},reply_parameters:{message_id:replyTo}}); }
-    catch { return await this.api.sendMessage(chatId,text,{link_preview_options:{is_disabled:true},reply_parameters:{message_id:replyTo}}); }
-  }
   private async showError(job: JobRow, message: string) {
     const safe = message.includes("图片") || message.includes("频道") || message.includes("频繁") || message.includes("上下文") ? message : "搜索暂时失败，请稍后重试。";
     try {

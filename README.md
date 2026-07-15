@@ -6,8 +6,10 @@
 
 - 在频道关联讨论群中发送 `@BotUsername 问题`。
 - 回复 Bot 的回答直接追问，不必再次提及 Bot。
+- 回复链按用户隔离：只有原提问者能继承上下文；其他成员必须重新 `@Bot` 提供完整问题。
 - 回复其他成员的文字或图片并 `@BotUsername 新问题`。
 - 支持 JPEG、PNG、WebP；每张 10 MB、每次最多 4 张。
+- 回答正文由 Typst 排版成 PNG 图片发送，只有回答中的参考 URL 保持为 Telegram 文本链接。
 - 回复链和图片默认保留 24 小时。
 - 只允许目标频道的当前成员使用。
 
@@ -38,6 +40,7 @@ cp .env.example .env
 
 `OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。
 图片默认每张最多 10 MB、每次合计最多 20 MB，可用 `MAX_IMAGE_BYTES` 和 `MAX_TOTAL_IMAGE_BYTES` 调整。
+Typst 默认以 160 PPI 渲染，最多 10 页；可用 `TYPST_PPI`、`TYPST_MAX_CHARS` 和 `TYPST_MAX_PAGES` 调整。官方 Docker 镜像已经包含 Typst 和 Noto CJK 字体，本地直接运行则需自行安装 `typst` 命令和中文字体。
 
 ## 本地运行
 

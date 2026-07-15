@@ -57,6 +57,10 @@ export function parseUpdate(update: Update, botId: number, username: string, dis
   if (repliesToBot && !parent) {
     return { kind: "invalid", reason: "这条回答的上下文已过期，请重新 @我并提供完整问题。", chatId: message.chat.id, replyTo: message.message_id };
   }
+  const crossUserReply = Boolean(parent && parent.user_id !== message.from.id);
+  if (crossUserReply && !mention.found) {
+    return { kind: "invalid", reason: "为避免群友之间串联上下文，请 @我并提供完整问题；其他用户的会话不会被继承。", chatId: message.chat.id, replyTo: message.message_id };
+  }
   if (!repliesToBot && !mention.found) return { kind: "ignore" };
   if (!mention.text) {
     return { kind: "invalid", reason: "请在提及我或回复回答时附上具体问题。", chatId: message.chat.id, replyTo: message.message_id };
@@ -68,8 +72,8 @@ export function parseUpdate(update: Update, botId: number, username: string, dis
     inputMessageId: message.message_id,
     question: mention.text,
     quotedText: replied && !repliesToBot ? quotedText(replied) : undefined,
-    parentNodeId: parent?.id,
+    parentNodeId: crossUserReply ? undefined : parent?.id,
     imageRefs: [...images(message, "current"), ...(replied && !repliesToBot ? images(replied, "quoted") : [])],
-    isFollowUp: Boolean(parent),
+    isFollowUp: Boolean(parent && !crossUserReply),
   }};
 }

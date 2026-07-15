@@ -4,6 +4,15 @@ export function extractSources(text: string): string[] {
   return [...new Set(text.match(urlPattern)?.map(x => x.replace(/[),.;!?]+$/, "")) ?? [])].slice(0, 20);
 }
 
+export function stripSourceUrls(text: string): string {
+  return text
+    .replace(/\[([^\]]+)]\(https?:\/\/[^)\s<>]+\)/g, "$1")
+    .replace(urlPattern, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
