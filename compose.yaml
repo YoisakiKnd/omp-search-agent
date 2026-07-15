@@ -1,11 +1,13 @@
 services:
   bot:
-    build: .
+    image: ghcr.io/yoisakiknd/omp-search-agent:latest
+    pull_policy: always
+    container_name: omp-search-agent
     restart: unless-stopped
-    env_file: .env
-    volumes:
-      - bot-data:/data
     init: true
-
-volumes:
-  bot-data:
+    stop_grace_period: 40s
+    env_file:
+      - .env
+    volumes:
+      - ./runtime/data:/data
+      - ./runtime/omp-agent:/home/bun/.omp/agent

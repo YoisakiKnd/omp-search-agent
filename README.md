@@ -52,7 +52,10 @@ bun run start
 ## Docker
 
 ```bash
-docker compose up -d --build
+mkdir -p runtime/data runtime/omp-agent
+sudo chown -R 1000:1000 runtime
+docker compose pull
+docker compose up -d
 docker compose logs -f bot
 ```
 
@@ -64,7 +67,7 @@ docker pull ghcr.io/yoisakiknd/omp-search-agent:latest
 
 每次推送到 `main` 会运行类型检查和测试，并构建 `linux/amd64`、`linux/arm64` 镜像；`v*` 标签会生成对应版本镜像标签。
 
-服务不监听端口，只需出站访问 Telegram、模型和搜索供应商。SQLite、回复链和标准化图片保存在 `bot-data` 卷。
+服务不监听端口，只需出站访问 Telegram、模型和搜索供应商。SQLite、回复链和标准化图片保存在 `runtime/data`，Oh-My-Pi 的 `models.yml` 放在 `runtime/omp-agent/models.yml`。
 
 ## 运维
 
