@@ -76,6 +76,6 @@ docker pull ghcr.io/yoisakiknd/omp-search-agent:latest
 ## 运维
 
 - 同一个 Bot Token 只能运行一个 polling 实例。
-- 如果进程异常退出留下 `/data/bot.lock`，确认没有实例运行后再删除该文件。
+- 进程异常退出留下的 `/data/bot.lock` 会自动清理；容器重建后即使复用了相同 PID，也不会被误判为重复实例。
 - 容器健康检查要求 polling heartbeat 在 60 秒内更新。
 - 日志只记录任务 ID、用户 ID、耗时和状态，不记录问题正文、图片或密钥。

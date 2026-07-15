@@ -18,7 +18,9 @@ async function acquireLock() {
   } catch {
     const previous = Number(await readFile(lockPath,"utf8").catch(()=>"0"));
     let alive = false;
-    if (previous > 0) try { process.kill(previous,0); alive = true; } catch {}
+    // 容器重建后经常会复用相同 PID；此时磁盘上的 PID 属于上一个容器，
+    // 不可能是尚未成功取得锁的当前进程。
+    if (previous > 0 && previous !== process.pid) try { process.kill(previous,0); alive = true; } catch {}
     if (alive) throw new Error(`Another bot instance is running with PID ${previous}`);
     await unlink(lockPath).catch(()=>{});
     const handle = await open(lockPath,"wx"); await handle.writeFile(String(process.pid)); return handle;
