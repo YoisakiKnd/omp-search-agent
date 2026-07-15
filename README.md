@@ -29,11 +29,12 @@ cp .env.example .env
 填写：
 
 - `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHANNEL_ID`
 - `TELEGRAM_DISCUSSION_GROUP_ID`
 - `OMP_MODEL`，格式通常为 `provider/model-id`
 - 模型供应商 API Key
 - 至少一个 Oh-My-Pi 搜索供应商 API Key
+
+可选设置 `TELEGRAM_CHANNEL_ID`：设置后，只有该频道的成员能在群里使用 Bot；不设置时，目标群里的成员可以直接使用。
 
 `OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。
 图片默认每张最多 10 MB、每次合计最多 20 MB，可用 `MAX_IMAGE_BYTES` 和 `MAX_TOTAL_IMAGE_BYTES` 调整。

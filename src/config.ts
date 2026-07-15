@@ -2,10 +2,14 @@ import { resolve } from "node:path";
 import { z } from "zod";
 
 const bool = z.string().optional().transform((v) => v == null ? true : !["0", "false", "no"].includes(v.toLowerCase()));
+const optionalNumericChatId = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.coerce.number().int().optional(),
+);
 
 const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(20),
-  TELEGRAM_CHANNEL_ID: z.coerce.number().int(),
+  TELEGRAM_CHANNEL_ID: optionalNumericChatId,
   TELEGRAM_DISCUSSION_GROUP_ID: z.coerce.number().int(),
   OMP_MODEL: z.string().min(1),
   OMP_SEARCH_PROVIDER: z.string().default("auto"),

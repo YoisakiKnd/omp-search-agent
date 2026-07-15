@@ -53,6 +53,7 @@ export class WorkerPool {
   }
 
   private async authorized(userId: number) {
+    if (this.config.TELEGRAM_CHANNEL_ID === undefined) return true;
     const cached = this.membershipCache.get(userId);
     if (cached && cached.expires > Date.now()) return cached.allowed;
     let allowed = false;
