@@ -31,10 +31,12 @@ RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
 
 FROM debian:bookworm-slim AS fonts
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk \
-    && mkdir -p /opt/fonts /opt/runtime/data /opt/runtime/home/bun/.omp/agent \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk libstdc++6 \
+    && mkdir -p /opt/fonts /opt/runtime/lib /opt/runtime/data /opt/runtime/home/bun/.omp/agent \
     && cp /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc /opt/fonts/ \
     && cp /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc /opt/fonts/ \
+    && cp -L "$(find /usr/lib -name libstdc++.so.6 -print -quit)" /opt/runtime/lib/ \
+    && cp -L "$(find /lib /usr/lib -name libgcc_s.so.1 -print -quit)" /opt/runtime/lib/ \
     && chown -R 1000:1000 /opt/runtime \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,9 +48,11 @@ ENV NODE_ENV=production \
     DATA_DIR=/data \
     HOME=/home/bun \
     XDG_CACHE_HOME=/tmp/.cache \
+    LD_LIBRARY_PATH=/usr/local/lib \
     PI_NATIVE_VARIANT=baseline
 COPY --from=typst /bin/typst /usr/local/bin/typst
 COPY --from=fonts /opt/fonts/ /usr/share/fonts/opentype/noto/
+COPY --from=fonts /opt/runtime/lib/ /usr/local/lib/
 COPY --from=fonts --chown=1000:1000 /opt/runtime/data/ /data/
 COPY --from=fonts --chown=1000:1000 /opt/runtime/home/bun/ /home/bun/
 COPY --from=deps --chown=1000:1000 /app/node_modules/ ./node_modules/
