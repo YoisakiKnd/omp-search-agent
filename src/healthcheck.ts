@@ -1,11 +1,12 @@
-import { stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
+import { assertHealthyHeartbeat } from "./health.ts";
 
 const config = loadConfig();
 try {
-  const info = await stat(join(config.DATA_DIR,"heartbeat.json"));
-  if (Date.now()-info.mtimeMs > 60_000) throw new Error("heartbeat is stale");
+  const heartbeat: unknown = JSON.parse(await readFile(join(config.DATA_DIR,"heartbeat.json"), "utf8"));
+  assertHealthyHeartbeat(heartbeat, Date.now(), config.HEALTH_STALE_MS);
   process.exit(0);
 } catch (error) {
   console.error(error); process.exit(1);

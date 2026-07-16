@@ -1,4 +1,6 @@
-import { unlink } from "node:fs/promises";
+import { readdir, stat, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { InputFile, type Api } from "grammy";
 import type { ChatMember, Update } from "grammy/types";
 import type { Config } from "./config.ts";
@@ -9,7 +11,8 @@ import { loadPrepared, prepareImage } from "./media.ts";
 import type { OmpRuntime } from "./omp.ts";
 import { parseUpdate } from "./parser.ts";
 import { RateLimiter } from "./rate-limit.ts";
-import type { JobRow, PreparedImage } from "./types.ts";
+import { buildUserPrompt } from "./prompt.ts";
+import type { JobRow, PreparedImage, StoredJobPayload } from "./types.ts";
 import { TypstRenderer } from "./typst.ts";
 
 class PermanentError extends Error {}
@@ -23,10 +26,12 @@ export class WorkerPool {
   private tasks = new Set<Promise<void>>();
   private limiter = new RateLimiter(5, 10 * 60_000);
   private membershipCache = new Map<number, { allowed: boolean; expires: number }>();
-  private renderer: TypstRenderer;
+  private renderer: Pick<TypstRenderer,"render">;
+  private abortController = new AbortController();
+  private lastHeartbeat = Date.now();
 
-  constructor(private config: Config, private store: Store, private api: Api, private botId: number, private username: string, private omp: OmpRuntime, private logger: Logger) {
-    this.renderer = new TypstRenderer(config);
+  constructor(private config: Config, private store: Store, private api: Api, private botId: number, private username: string, private omp: OmpRuntime, private logger: Logger, renderer?: Pick<TypstRenderer,"render">) {
+    this.renderer = renderer ?? new TypstRenderer(config);
   }
 
   start() {
@@ -34,29 +39,46 @@ export class WorkerPool {
       const task = this.loop(i).finally(() => this.tasks.delete(task)); this.tasks.add(task);
     }
   }
-  async stop() { this.stopping = true; await Promise.allSettled(this.tasks); }
+  async stop() {
+    this.stopping = true;
+    this.abortController.abort();
+    await Promise.allSettled(this.tasks);
+  }
+  heartbeatAt() { return this.lastHeartbeat; }
 
   private async loop(slot: number) {
+    const owner = `${slot}:${randomUUID()}`;
     while (!this.stopping) {
+      this.lastHeartbeat = Date.now();
       this.store.heartbeat(`worker-${slot}`);
-      const job = this.store.claim();
+      const job = this.store.claim(owner);
       if (!job) { await Bun.sleep(400); continue; }
       const started = Date.now();
+      let leaseLost = false;
+      const renewEvery = Math.max(5_000, Math.min(30_000, Math.floor(this.config.QUERY_TIMEOUT_MS / 3)));
+      const renew = setInterval(() => {
+        this.lastHeartbeat = Date.now();
+        if (!this.store.renewJobLease(job.id, owner)) leaseLost = true;
+      }, renewEvery);
       try {
         await this.run(job);
-        this.store.complete(job.id);
+        if (leaseLost || !this.store.complete(job.id, owner)) {
+          throw new Error("job lease was lost before completion");
+        }
         this.logger.info("job completed", { jobId: job.id, updateId: job.update_id, durationMs: Date.now()-started });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const retry = !(error instanceof PermanentError) && job.attempts < 2;
-        this.store.fail(job.id, message, retry);
+        const owned = !leaseLost && this.store.fail(job.id, owner, message, retry);
         this.logger.error("job failed", { jobId: job.id, retry, error: message });
-        if (!retry) await this.showError(job, message);
+        if (owned && !retry && !this.stopping) await this.showError(job, message);
+      } finally {
+        clearInterval(renew);
       }
     }
   }
 
-  private async authorized(userId: number) {
+  async authorized(userId: number) {
     if (this.config.TELEGRAM_CHANNEL_ID === undefined) return true;
     const cached = this.membershipCache.get(userId);
     if (cached && cached.expires > Date.now()) return cached.allowed;
@@ -66,18 +88,28 @@ export class WorkerPool {
     return allowed;
   }
 
+  allowRequest(userId: number) { return this.limiter.allow(userId); }
+
   private async run(job: JobRow) {
-    const update = JSON.parse(job.payload) as Update;
+    if (job.conversation_node_id) {
+      if (job.placeholder_message_id) await this.api.deleteMessage(job.chat_id, job.placeholder_message_id).catch(()=>{});
+      return;
+    }
+    const decoded = JSON.parse(job.payload) as Update | StoredJobPayload;
+    const update = "update" in decoded ? decoded.update : decoded;
     const parsed = parseUpdate(update, this.botId, this.username, this.config.TELEGRAM_DISCUSSION_GROUP_ID, this.store);
     if (parsed.kind !== "request") throw new PermanentError(parsed.kind === "invalid" ? parsed.reason : "消息已不可处理");
     const req = parsed.request;
+    if ("update" in decoded && decoded.albumImageRefs?.length) {
+      req.imageRefs = [...decoded.albumImageRefs, ...req.imageRefs]
+        .filter((image, index, all) => all.findIndex((candidate) => candidate.uniqueId === image.uniqueId) === index);
+    }
     if (!await this.authorized(req.userId)) throw new PermanentError("只有频道成员可以使用此 Bot。");
-    if (job.attempts === 1 && !this.limiter.allow(req.userId)) throw new PermanentError("请求过于频繁，请稍后再试。");
 
     let placeholder = job.placeholder_message_id;
     if (!placeholder) {
       const sent = await this.api.sendMessage(req.chatId, req.imageRefs.length ? "正在分析图片并搜索…" : "正在搜索…", { reply_parameters: { message_id: req.inputMessageId } });
-      placeholder = sent.message_id; this.store.setPlaceholder(job.id, placeholder);
+      placeholder = sent.message_id; this.store.setPlaceholder(job.id, job.lease_owner!, placeholder);
     }
 
     const prepared: PreparedImage[] = [];
@@ -96,16 +128,24 @@ export class WorkerPool {
       }
     }
 
-    const prompt = this.buildPrompt(req.parentNodeId, req.quotedText, req.question, req.userId);
-    const answer = await this.omp.ask(prompt, prepared);
+    const history = req.parentNodeId ? this.store.conversationPath(req.parentNodeId, req.userId) : [];
+    const prompt = buildUserPrompt(history, req.quotedText, req.question, this.config.CONTEXT_MAX_CHARS);
+    const answer = job.result ?? await this.omp.ask(prompt, prepared, this.abortController.signal);
+    if (!job.result && !this.store.setJobResult(job.id, job.lease_owner!, answer)) {
+      throw new Error("job lease was lost before result persistence");
+    }
     const sourceLinks = extractSourceLinks(answer);
     const sources = sourceLinks.map(source=>source.url);
     const body = stripSourceUrls(answer);
     const rendered = await this.renderer.render(body);
+    const recorded = new Map(this.store.jobOutputs(job.id).map((item) => [`${item.kind}:${item.position}`, item.message_id]));
     const outputIds: number[] = [];
     try {
-      for (const path of rendered.paths) {
+      for (const [index, path] of rendered.paths.entries()) {
+        const existing = recorded.get(`page:${index}`);
+        if (existing) { outputIds.push(existing); continue; }
         const sent = await this.api.sendPhoto(req.chatId, new InputFile(path), { reply_parameters: { message_id:req.inputMessageId } });
+        if (!this.store.recordJobOutput(job.id, job.lease_owner!, "page", index, sent.message_id)) throw new Error("job lease was lost while recording output");
         outputIds.push(sent.message_id);
       }
       if (sourceLinks.length) {
@@ -117,10 +157,13 @@ export class WorkerPool {
           if (!last || last.length + line.length + 1 > 3900) batches.push(line);
           else batches[batches.length-1] = `${last}\n${line}`;
         }
-        for (const batch of batches) {
+        for (const [index, batch] of batches.entries()) {
+          const existing = recorded.get(`source:${index}`);
+          if (existing) { outputIds.push(existing); continue; }
           const sent = await this.api.sendMessage(req.chatId, batch, {
             parse_mode:"HTML", link_preview_options:{is_disabled:true}, reply_parameters:{message_id:req.inputMessageId},
           });
+          if (!this.store.recordJobOutput(job.id, job.lease_owner!, "source", index, sent.message_id)) throw new Error("job lease was lost while recording output");
           outputIds.push(sent.message_id);
         }
       }
@@ -128,20 +171,7 @@ export class WorkerPool {
     } finally {
       await rendered.cleanup();
     }
-    this.store.addConversation({ chatId:req.chatId,inputMessageId:req.inputMessageId,userId:req.userId,parentId:req.parentNodeId,question:req.question,quotedText:req.quotedText,answer,sources,outputIds,media:prepared.map(x=>({hash:x.hash,path:x.path,mimeType:x.mimeType,bytes:x.bytes})) });
-  }
-
-  private buildPrompt(parentId: number | undefined, quoted: string | undefined, question: string, ownerUserId: number) {
-    const sections: string[] = [];
-    if (parentId) {
-      const path = this.store.conversationPath(parentId, ownerUserId);
-      let transcript = path.map((n,i) => `第 ${i+1} 轮用户：${n.question}\n第 ${i+1} 轮助手：${n.answer}`).join("\n\n");
-      if (transcript.length > this.config.CONTEXT_MAX_CHARS) transcript = transcript.slice(-this.config.CONTEXT_MAX_CHARS);
-      sections.push(`<untrusted_conversation>\n${transcript}\n</untrusted_conversation>`);
-    }
-    if (quoted) sections.push(`<untrusted_quoted_message>\n${quoted.slice(0,4000)}\n</untrusted_quoted_message>`);
-    sections.push(`<current_question>\n${question}\n</current_question>`);
-    return sections.join("\n\n");
+    this.store.addConversation({ jobId:job.id,owner:job.lease_owner!,chatId:req.chatId,inputMessageId:req.inputMessageId,userId:req.userId,parentId:req.parentNodeId,question:req.question,quotedText:req.quotedText,answer,sources,outputIds,media:prepared.map(x=>({hash:x.hash,path:x.path,mimeType:x.mimeType,bytes:x.bytes})) });
   }
 
   private async showError(job: JobRow, message: string) {
@@ -149,7 +179,8 @@ export class WorkerPool {
     try {
       if (job.placeholder_message_id) await this.api.editMessageText(job.chat_id,job.placeholder_message_id,safe);
       else {
-        const update = JSON.parse(job.payload) as Update;
+        const decoded = JSON.parse(job.payload) as Update | StoredJobPayload;
+        const update = "update" in decoded ? decoded.update : decoded;
         if (update.message) await this.api.sendMessage(job.chat_id,safe,{reply_parameters:{message_id:update.message.message_id}});
       }
     } catch {}
@@ -157,6 +188,14 @@ export class WorkerPool {
 
   async cleanup() {
     for (const path of this.store.cleanup()) await unlink(path).catch(()=>{});
+    const mediaDir = join(this.config.DATA_DIR, "media");
+    const cutoff = Date.now() - this.config.ORPHAN_MEDIA_GRACE_HOURS * 3_600_000;
+    for (const name of await readdir(mediaDir).catch(() => [] as string[])) {
+      const path = join(mediaDir, name);
+      if (this.store.isMediaPathKnown(path)) continue;
+      const info = await stat(path).catch(() => null);
+      if (info?.isFile() && info.mtimeMs < cutoff) await unlink(path).catch(()=>{});
+    }
   }
 }
 

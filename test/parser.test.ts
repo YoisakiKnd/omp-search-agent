@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseUpdate } from "../src/parser.ts";
+import { parseAlbumUpdates, parseUpdate } from "../src/parser.ts";
 
 const noopStore = { parentForMessage: () => null } as any;
 
@@ -37,5 +37,16 @@ describe("parseUpdate", () => {
     const result = parseUpdate(update,99,"SearchBot",-100,noopStore);
     expect(result.kind).toBe("request");
     if (result.kind === "request") expect(result.request.imageRefs[0]?.origin).toBe("quoted");
+  });
+
+  test("aggregates every unique image in a Telegram media group", () => {
+    const base = { date:1, chat:{id:-100,type:"supergroup"}, from:{id:7,is_bot:false,first_name:"u"}, media_group_id:"g" };
+    const updates: any[] = [
+      { update_id:10, message:{...base,message_id:10,caption:"@SearchBot 对比这些图片",caption_entities:[{type:"mention",offset:0,length:10}],photo:[{file_id:"f1",file_unique_id:"u1",width:100,height:100}]} },
+      { update_id:11, message:{...base,message_id:11,photo:[{file_id:"f2",file_unique_id:"u2",width:100,height:100}]} },
+    ];
+    const result = parseAlbumUpdates(updates,99,"SearchBot",-100,noopStore);
+    expect(result?.result.kind).toBe("request");
+    expect(result?.imageRefs.map((image) => image.fileId)).toEqual(["f1","f2"]);
   });
 });

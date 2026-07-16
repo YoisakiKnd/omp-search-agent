@@ -33,6 +33,14 @@ export function extractSources(text: string): string[] {
   return extractSourceLinks(text).map(source=>source.url);
 }
 
+export function independentSourceCount(text: string): number {
+  const hosts = new Set<string>();
+  for (const { url } of extractSourceLinks(text)) {
+    try { hosts.add(new URL(url).hostname.toLowerCase().replace(/^www\./, "")); } catch {}
+  }
+  return hosts.size;
+}
+
 export function stripSourceUrls(text: string): string {
   const lines = text.replaceAll("\r\n","\n").split("\n");
   const sourceHeading = lines.findIndex((line,index) =>

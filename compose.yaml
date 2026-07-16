@@ -1,13 +1,29 @@
 services:
   bot:
-    image: ghcr.io/yoisakiknd/omp-search-agent:latest
+    image: ${BOT_IMAGE:-ghcr.io/yoisakiknd/omp-search-agent:latest}
     pull_policy: always
     container_name: omp-search-agent
     restart: unless-stopped
     init: true
-    stop_grace_period: 40s
+    user: "1000:1000"
+    read_only: true
+    stop_grace_period: 45s
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
+    environment:
+      DATA_DIR: /data
     volumes:
       - ./runtime/data:/data
       - ./runtime/omp-agent:/home/bun/.omp/agent
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

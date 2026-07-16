@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractSourceLinks, extractSources, splitText, stripSourceUrls, toTelegramHtml } from "../src/format.ts";
+import { extractSourceLinks, extractSources, independentSourceCount, splitText, stripSourceUrls, toTelegramHtml } from "../src/format.ts";
 
 describe("format", () => {
   test("escapes HTML and links URLs", () => {
@@ -7,6 +7,9 @@ describe("format", () => {
     expect(toTelegramHtml("https://example.com")).toContain("<a href=");
   });
   test("extracts unique sources", () => expect(extractSources("https://a.test x https://a.test")).toEqual(["https://a.test"]));
+  test("counts independent source domains instead of URL count", () => {
+    expect(independentSourceCount("https://a.test/1 https://www.a.test/2 https://b.test/x")).toBe(2);
+  });
   test("keeps human-readable source labels", () => {
     expect(extractSourceLinks("- [Typst PNG 文档](https://typst.app/docs/reference/png/)\n- https://example.com/news")).toEqual([
       { label:"Typst PNG 文档", url:"https://typst.app/docs/reference/png/" },

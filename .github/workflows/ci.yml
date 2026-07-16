@@ -19,3 +19,32 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun test
+
+  container:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: omp-search-agent:test
+          cache-from: type=gha,scope=container-test
+          cache-to: type=gha,mode=max,scope=container-test
+      - name: Smoke-test runtime image
+        run: |
+          docker run --rm omp-search-agent:test --version
+          docker run --rm --entrypoint /usr/local/bin/bun omp-search-agent:test -e \
+            "const sdk = await import('@oh-my-pi/pi-coding-agent/sdk'); const registry = await import('@oh-my-pi/pi-coding-agent/config/model-registry'); if (!sdk.createAgentSession || !registry.ModelRegistry) process.exit(1)"
+          docker run --rm --entrypoint /usr/local/bin/bun omp-search-agent:test -e \
+            "import sharp from 'sharp'; await sharp({ create: { width: 1, height: 1, channels: 3, background: 'white' } }).png().toBuffer()"
+          docker run --rm --entrypoint /usr/local/bin/typst omp-search-agent:test --version
+          docker run --rm --entrypoint /usr/local/bin/typst omp-search-agent:test fonts | grep -q "Noto Sans CJK SC"
+      - name: Report image size
+        run: |
+          bytes=$(docker image inspect omp-search-agent:test --format '{{.Size}}')
+          mib=$((bytes / 1024 / 1024))
+          echo "### Runtime image size: ${mib} MiB (uncompressed)" >> "$GITHUB_STEP_SUMMARY"

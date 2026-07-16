@@ -30,6 +30,25 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=sha,prefix=sha-
+      - name: Build amd64 image for pre-publish checks
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: omp-search-agent:smoke
+          cache-from: type=gha,scope=container-publish
+          cache-to: type=gha,mode=max,scope=container-publish
+          pull: true
+      - name: Smoke-test runtime image
+        run: |
+          docker run --rm omp-search-agent:smoke --version
+          docker run --rm --entrypoint /usr/local/bin/bun omp-search-agent:smoke -e \
+            "const sdk = await import('@oh-my-pi/pi-coding-agent/sdk'); const registry = await import('@oh-my-pi/pi-coding-agent/config/model-registry'); if (!sdk.createAgentSession || !registry.ModelRegistry) process.exit(1)"
+          docker run --rm --entrypoint /usr/local/bin/bun omp-search-agent:smoke -e \
+            "import sharp from 'sharp'; await sharp({ create: { width: 1, height: 1, channels: 3, background: 'white' } }).png().toBuffer()"
+          docker run --rm --entrypoint /usr/local/bin/typst omp-search-agent:smoke --version
+          docker run --rm --entrypoint /usr/local/bin/typst omp-search-agent:smoke fonts | grep -q "Noto Sans CJK SC"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -42,5 +61,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=container-publish
+          cache-to: type=gha,mode=max,scope=container-publish
+          pull: true
+          provenance: mode=max
+          sbom: true

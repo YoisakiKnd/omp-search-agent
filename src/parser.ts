@@ -23,7 +23,7 @@ function stripBotMention(text: string, entities: MessageEntity[], username: stri
   return { found, text: cleaned.replace(/^\s*[:,，：-]?\s*/, "").trim() };
 }
 
-function images(message: Message | undefined, origin: ImageRef["origin"]): ImageRef[] {
+export function messageImageRefs(message: Message | undefined, origin: ImageRef["origin"]): ImageRef[] {
   if (!message) return [];
   if ("photo" in message && message.photo?.length) {
     const photo = [...message.photo].sort((a,b) => (b.file_size ?? b.width*b.height) - (a.file_size ?? a.width*a.height))[0]!;
@@ -38,12 +38,26 @@ function images(message: Message | undefined, origin: ImageRef["origin"]): Image
 function quotedText(message: Message | undefined): string | undefined {
   if (!message) return undefined;
   const value = body(message).text.trim();
-  if (!value) return images(message, "quoted").length ? "[引用消息包含一张图片]" : undefined;
+  if (!value) return messageImageRefs(message, "quoted").length ? "[引用消息包含一张图片]" : undefined;
   const from = "from" in message && message.from ? [message.from.first_name, message.from.last_name].filter(Boolean).join(" ") : "未知用户";
   return `${from}: ${value}`;
 }
 
 export type ParseResult = { kind: "ignore" } | { kind: "invalid"; reason: string; chatId: number; replyTo: number } | { kind: "request"; request: ParsedRequest };
+
+export function parseAlbumUpdates(updates: Update[], botId: number, username: string, discussionGroupId: number, store: Store): { update: Update; result: Exclude<ParseResult,{kind:"ignore"}>; imageRefs: ImageRef[] } | null {
+  let invalid: { update: Update; result: Extract<ParseResult,{kind:"invalid"}> } | undefined;
+  for (const update of updates) {
+    const result = parseUpdate(update, botId, username, discussionGroupId, store);
+    if (result.kind === "request") {
+      const refs = updates.flatMap((item) => messageImageRefs(item.message, "current"));
+      const imageRefs = refs.filter((image, index) => refs.findIndex((candidate) => candidate.uniqueId === image.uniqueId) === index);
+      return { update, result, imageRefs };
+    }
+    if (result.kind === "invalid" && !invalid) invalid = { update, result };
+  }
+  return invalid ? { ...invalid, imageRefs:[] } : null;
+}
 
 export function parseUpdate(update: Update, botId: number, username: string, discussionGroupId: number, store: Store): ParseResult {
   const message = update.message;
@@ -73,7 +87,7 @@ export function parseUpdate(update: Update, botId: number, username: string, dis
     question: mention.text,
     quotedText: replied && !repliesToBot ? quotedText(replied) : undefined,
     parentNodeId: crossUserReply ? undefined : parent?.id,
-    imageRefs: [...images(message, "current"), ...(replied && !repliesToBot ? images(replied, "quoted") : [])],
+    imageRefs: [...messageImageRefs(message, "current"), ...(replied && !repliesToBot ? messageImageRefs(replied, "quoted") : [])],
     isFollowUp: Boolean(parent && !crossUserReply),
   }};
 }

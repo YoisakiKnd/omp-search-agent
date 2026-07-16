@@ -8,7 +8,11 @@ export interface JobRow {
   payload: string;
   status: "queued" | "running" | "succeeded" | "failed";
   attempts: number;
+  lease_until: number | null;
+  lease_owner: string | null;
   placeholder_message_id: number | null;
+  result: string | null;
+  conversation_node_id: number | null;
 }
 
 export interface ConversationNode {
@@ -24,6 +28,11 @@ export interface ConversationNode {
 }
 
 export interface StoredUpdate { update: Update }
+
+export interface StoredJobPayload {
+  update: Update;
+  albumImageRefs?: ImageRef[];
+}
 
 export interface ParsedRequest {
   userId: number;

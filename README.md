@@ -8,7 +8,7 @@
 - 回复 Bot 的回答直接追问，不必再次提及 Bot。
 - 回复链按用户隔离：只有原提问者能继承上下文；其他成员必须重新 `@Bot` 提供完整问题。
 - 回复其他成员的文字或图片并 `@BotUsername 新问题`。
-- 支持 JPEG、PNG、WebP；每张 10 MB、每次最多 4 张。
+- 支持 JPEG、PNG、WebP；每张 10 MB、每次最多 4 张，并会自动聚合 Telegram 相册中的多张图片。
 - 回答正文由 Typst 排版成 PNG 图片发送，只有回答中的参考 URL 保持为 Telegram 文本链接。
 - 回复链和图片默认保留 24 小时。
 - 只允许目标频道的当前成员使用。
@@ -38,7 +38,7 @@ cp .env.example .env
 
 可选设置 `TELEGRAM_CHANNEL_ID`：设置后，只有该频道的成员能在群里使用 Bot；不设置时，目标群里的成员可以直接使用。
 
-`OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。联网回答默认要求至少 6 个可用来源和约 1800 个中文字符，可用 `SEARCH_MIN_SOURCES` 与 `ANSWER_TARGET_CHARS` 调整。
+`OMP_MODEL` 应支持图片输入。`OMP_SEARCH_PROVIDER=auto` 会使用 Oh-My-Pi 的可用搜索供应商回退链。联网回答默认要求至少 6 个可用来源，研究型回答目标约 1400 个中文字符；简单问题会更短，可用 `SEARCH_MIN_SOURCES` 与 `ANSWER_TARGET_CHARS` 调整。
 图片默认每张最多 10 MB、每次合计最多 20 MB，可用 `MAX_IMAGE_BYTES` 和 `MAX_TOTAL_IMAGE_BYTES` 调整。
 Typst 默认以 160 PPI 渲染，最多 10 页；可用 `TYPST_PPI`、`TYPST_MAX_CHARS` 和 `TYPST_MAX_PAGES` 调整。官方 Docker 镜像已经包含 Typst 和 Noto CJK 字体，本地直接运行则需自行安装 `typst` 命令和中文字体。
 
@@ -55,13 +55,39 @@ bun run start
 
 ## Docker
 
+生产镜像使用多阶段构建：依赖阶段只安装 Linux 当前架构的生产依赖，运行阶段使用 Bun distroless，并只复制 Typst、Noto Sans CJK 字体和运行所需文件。未启用的本地语音、Transformers/ONNX 依赖不会进入最终镜像。容器默认以 UID/GID `1000:1000`、只读根文件系统和全部 capabilities 删除的方式运行。
+
 ```bash
 mkdir -p runtime/data runtime/omp-agent
 sudo chown -R 1000:1000 runtime
 docker compose pull
 docker compose up -d
+docker compose ps
 docker compose logs -f bot
 ```
+
+更新部署：
+
+```bash
+docker compose pull
+docker compose up -d --remove-orphans
+docker image prune -f
+```
+
+如需固定版本或快速回滚，在 `.env` 中设置镜像标签或 digest：
+
+```dotenv
+BOT_IMAGE=ghcr.io/yoisakiknd/omp-search-agent:v0.1.0
+# 或 ghcr.io/yoisakiknd/omp-search-agent@sha256:...
+```
+
+从当前源码本地构建：
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+最终镜像是 distroless，不包含 shell、包管理器和调试工具。`/app` 为只读，临时文件写入受限的 `/tmp` tmpfs，持久数据只写入 `/data` 与 `/home/bun/.omp/agent` 两个挂载目录。
 
 也可以直接使用 GitHub Actions 发布到 GHCR 的镜像：
 
@@ -76,6 +102,7 @@ docker pull ghcr.io/yoisakiknd/omp-search-agent:latest
 ## 运维
 
 - 同一个 Bot Token 只能运行一个 polling 实例。
-- 进程异常退出留下的 `/data/bot.lock` 会自动清理；容器重建后即使复用了相同 PID，也不会被误判为重复实例。
-- 容器健康检查要求 polling heartbeat 在 60 秒内更新。
+- 实例通过 SQLite 租约互斥运行，不依赖容器 PID；异常退出后租约默认在 90 秒内失效。
+- 已完成任务的原始 Telegram payload 会立即清空，任务元数据默认保留 7 天；未登记的孤儿图片默认在 24 小时后清理。
+- 容器健康检查同时验证进程、Telegram API 连通性和 Worker 心跳，默认要求在 120 秒内更新。
 - 日志只记录任务 ID、用户 ID、耗时和状态，不记录问题正文、图片或密钥。
